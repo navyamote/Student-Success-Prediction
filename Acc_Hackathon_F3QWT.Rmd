@@ -1,0 +1,535 @@
+---
+title: "<center><h1>Models for 
+House Prices dataset</h1></center>"
+author: 
+  "Navya Mote"
+date: "<center>Oct 13, 2018</center>"
+---
+
+  We took reference for the cleaning part from :
+  https://www.kaggle.com/tannercarbonati/detailed-data-analysis-ensemble-modeling
+
+  
+
+```{r warning=FALSE, message=FALSE}
+require(ggplot2) # for data visualization
+require(stringr) #extracting string patterns
+# require(Matrix) # matrix transformations
+require(glmnet) # ridge, lasso & elastinet
+# require(xgboost) # gbm
+require(randomForest)
+require(Metrics) # rmse
+# require(dplyr) # load this in last so plyr doens't overlap it
+require(caret) # one hot encoding
+require(scales) # plotting $$
+require(e1071) # skewness
+require(corrplot) # correlation plot
+library(stringr)
+library(tidyr)
+```
+
+The first thing we'll do is load in the training and testing data. The training data consists of 1460 rows and 81 columns while the testing has 1459 rows and 80 columns (excluding the `SalePrice` column), which in this dataset is the dependent variable we are trying to predict. For us to perform analysis at a more productive rate we can combine the 2 dataframes together and run analysis on both data sets at once, then split the data once we are ready to train a model. 
+
+The `Id` feature is useless so we can toss it out of our dataset and we won't include `SalePrice` since it is our response variable. We also won't import string variables as factors since our ultimate goal is to tranform all our variables to numeric. Removing 'FireplaceQu' and 'LotFrontage' significantly improved our predictions.
+
+```{r warning=FALSE, message=FALSE}
+train_o <- read.csv('C:/Users/Navya/Desktop/Accenture/hackathon_els_data_set.csv', stringsAsFactors = FALSE)
+# test <- read.csv('C:/Users/Navya/Desktop/OR568/House price/test.csv', stringsAsFactors = FALSE)
+
+train <- train_o[,c(1:1673)]
+train$F3QWT<-train_o$F3QWT
+# combine the datasets
+# df.combined <- within(train, rm('F3QWT','STU_ID','SCH_ID','STRAT_ID'))
+# dim(df.combined)
+```
+
+Our dataset is filled with many missing values, therefore, before we can build any predictive model we'll clean our data by filling in all NA's with appropriate values. For each column we'll try to replace NA's by using features that have a strong correlation, which will help us determine what values to fill in. 
+
+```{r warning=FALSE, message=FALSE}
+na.cols <- which(colSums(is.na(train)) > 0)
+sort(colSums(sapply(train[na.cols], is.na)), decreasing = TRUE)
+paste('There are', length(na.cols), 'columns with missing values')
+```
+
+```{r}
+train <- train[complete.cases(train),]
+```
+
+We've transformed all the categoric features with an ordianl scale into a numeric columns. Let's see which variables have the strongest effect on a houses sale price. 
+
+To determine which features have the strongest relationship with **SalePrice** we can compute the sample correlation coefficient between the 2 variables, $$r_{xy} = \frac{s_{xy}}{s_xs_y}$$ where $s_{xy} = \mathbf{E}[(X-\mathbf{E}[X])(Y-\mathbf{E}[Y])$ is the sample covariance and $s_x, s_y$ are the sample standard deviations. The correlation coefficient measures the how linearly related the 2 variables are. A coefficient of 0 means that the 2 variables show no linear relationship, a coefficient between (0,1] shows that they have positive relationship and a coefficient between [-1,0) means they have a negative relationship. We're particularly interested in variables that show strong relationship with **SalePrice** so we will focus primarily on features that have a coefficient > .5 or < -.5. 
+
+```{r}
+# need the SalePrice column
+# corr.df <- cbind(df.combined, train['F3QWT'][1:9945])
+
+# only using the first 1460 rows - training data
+num_features <- names(which(sapply(train, is.numeric)))
+cat_features <- names(which(sapply(train, is.character)))
+# train$F2STEMOCC36<-readr::parse_number(train$F2STEMOCC36)
+# train$F2STEMOCCC6<-readr::parse_number(train$F2STEMOCCC6)
+# train$F3BYSTEMOC30<-readr::parse_number(train$F3BYSTEMOC30)
+# train$F3F1STEMOC30<-readr::parse_number(train$F3F1STEMOC30)
+# train$F3F1STEMOCCF<-readr::parse_number(train$F3F1STEMOCCF)
+# train$F3F1STEMOCCM<-readr::parse_number(train$F3F1STEMOCCM)
+# train$F3STEMOCCA30<-readr::parse_number(train$F3STEMOCCA30)
+# train$F3STEMOCCCUR<-readr::parse_number(train$F3STEMOCCCUR)
+# train<-abs(train)
+train[train < 0] <- 0
+# correlations <- cor(train)
+```
+
+We can print a matrix of scatter plots to see what these relationships look like under the hood to get a better sense of whats going on. 
+```
+
+##Preprocessing
+```{r warning=FALSE, message=FALSE}
+
+```
+
+What does our distribution of housing prices look like?
+
+```{r warning=FALSE, message=FALSE}
+require(WVPlots)
+y.true <- train$F3QWT
+
+qplot(y.true, geom='density') +
+  geom_histogram(aes(y=..density..), color='white', 
+                 fill='lightblue', alpha=.5, bins = 60) +
+  geom_line(aes(y=..density..), color='cornflowerblue', lwd = 1, stat = 'density') + 
+  stat_function(fun = dnorm, colour = 'indianred', lwd = 1, args = 
+                  list(mean(train$F3QWT), sd(train$F3QWT))) +
+  scale_x_continuous(breaks = seq(0,800000,100000), labels = dollar) +
+  scale_y_continuous(labels = comma) +
+  theme_minimal() +
+  annotate('text', label = paste('skewness =', signif(skewness(train$F3QWT),4)),
+           x=500000,y=7.5e-06)
+
+qqnorm(train$F3QWT)
+qqline(train$F3QWT)
+```
+
+```{r warning=FALSE, message=FALSE}
+y_train <- log(y.true+1)
+
+qplot(y_train, geom = 'density') +
+  geom_histogram(aes(y=..density..), color = 'white', fill = 'lightblue', alpha = .5, bins = 60) +
+  scale_x_continuous(breaks = seq(0,800000,100000), labels = comma) +
+  geom_line(aes(y=..density..), color='dodgerblue4', lwd = 1, stat = 'density') + 
+  stat_function(fun = dnorm, colour = 'indianred', lwd = 1, args = 
+                  list(mean(y_train), sd(y_train))) +
+  #scale_x_continuous(breaks = seq(0,800000,100000), labels = dollar) +
+  scale_y_continuous(labels = comma) +
+  theme_minimal() +
+  annotate('text', label = paste('skewness =', signif(skewness(y_train),4)),
+           x=13,y=1) +
+  labs(x = 'log(SalePrice + 1)') 
+
+qqnorm(y_train)
+qqline(y_train)
+
+#We can see from the histogram and the quantile-quantile plot that the distribution of sale prices is right-skewed and does not follow a normal distribution. Lets make a log-transformation and see how our data looks
+
+```
+
+```{r}
+paste('The dataframe has', dim(train)[1], 'rows and', dim(train)[2], 'columns')
+```
+
+We've manipulated a lot of variables and added many features, 345 to be exact, in our dataset and their could potentially be some variables that won't give our data any value when we're modeling. Some of these features may have become zero-variance predictors, such that a few samples may have an insignificant influence on the model. These *near-zero-variance* may cause overfitting or will prevent our model from generalizing over the data at a more sufficient rate. The package `caret` offers a function `nearZeroVar`, which checks the frequency of the most common value over the second most frequent value, which would be closer to 1 for well-behaved predictors and very large for highly-unbalanced features. It also checks the number of unique values divided by the *n* number of samples which will approach zero as the level of detail in the feature increases. We can remove all of the near-zero-variance variables from out dataframe.
+
+```{r warning=FALSE, message=FALSE}
+nzv.data <- nearZeroVar(train, saveMetrics = TRUE)
+
+# take any of the near-zero-variance perdictors
+drop.cols <- rownames(nzv.data)[nzv.data$nzv == TRUE]
+
+train <- train[,!names(train) %in% drop.cols]
+
+paste('The dataframe now has', dim(train)[1], 'rows and', dim(train)[2], 'columns')
+```
+Our new distribution with the transformed data follows much closer to a normal distribution and we can verify this from the quantile-quantile plot. Now that our independent and dependent variables satisfy the assumption of normality we can begin building our model.
+```{r warning=FALSE, message=FALSE}
+df.train <- within(train, rm('STU_ID','SCH_ID','STRAT_ID'))
+xall_train <- df.train[1:6630,]
+df.test <- within(train, rm('F3QWT','STU_ID','SCH_ID','STRAT_ID'))
+xall_test <- df.test[6631:nrow(df.test),]
+dtrain <- xgb.DMatrix(as.matrix(x_train), label = y_train)
+dtest <- xgb.DMatrix(as.matrix(x_test))
+```
+
+```{r}
+#xtall_train<-xall_train
+#xtall_train['SalePrice']<-y_train
+# Multiple Linear Regression using all predictors
+lmFitAllPredictors = lm(F3QWT~.,data = xall_train)
+summary(lmFitAllPredictors)
+# Residual standard error: 0.1051 on 1322 degrees of freedom
+# Multiple R-squared:  0.9361,	Adjusted R-squared:  0.9296 
+# F-statistic: 145.5 on 133 and 1322 DF,  p-value: < 2.2e-16
+
+AIC(lmFitAllPredictors, k=2)
+BIC(lmFitAllPredictors)
+# [1] -2299.759
+# [1] -1586.493
+
+lmPred1 <- predict(lmFitAllPredictors, xall_test)
+# lmPred1_n<-as.numeric(predict(lmFitAllPredictors, xall_test))
+head(lmPred1)
+lmPred1_pred <- as.double(exp(lmPred1) - 1)
+write.csv(lmPred1_pred, file = "lmPred1_pred.csv")
+```
+```{r}
+# Multiple Linear Regression using filtered predictors
+df.combined <- within(train, rm('F3QWT','STU_ID','SCH_ID','STRAT_ID'))
+tooHigh <- findCorrelation(cor(df.combined), .9)
+fil_df<-df.combined[, -tooHigh]
+
+x_train <- fil_df[1:6630,]
+
+x_test <- fil_df[6631:nrow(fil_df),]
+xt_train<-x_train
+xt_train['F3QWT']<-xall_train$F3QWT
+
+lmFitfilteredPredictors = lm(F3QWT~.,data = xt_train)
+summary(lmFitfilteredPredictors)
+# Residual standard error: 0.1068 on 1340 degrees of freedom
+# Multiple R-squared:  0.933,	Adjusted R-squared:  0.9273 
+# F-statistic: 162.3 on 115 and 1340 DF,  p-value: < 2.2e-16
+AIC(lmFitfilteredPredictors, k=2)
+BIC(lmFitfilteredPredictors)
+# [1] -2268.266
+# [1] -1650.103
+lmPred1 <- predict(lmFitfilteredPredictors, x_test)
+# lmPred1_n<-as.numeric(predict(lmFitfilteredPredictors, x_test))
+head(lmPred1)
+lmPred1_pred <- as.double(exp(lmPred1) - 1)
+write.csv(lmPred1_pred, file = "lmPred1_pred.csv")
+```
+
+```{r}
+# Linear regression model with 10 folds CV
+ctrl <- trainControl(method = "cv", number = 10)
+set.seed(100)
+y_train<-xall_train$F3QWT
+lmFit1 <- train(x = x_train, y = y_train, method = "lm", trControl = ctrl)
+
+summary(lmFit1)
+# Residual standard error: 0.1068 on 1340 degrees of freedom
+# Multiple R-squared:  0.933,	Adjusted R-squared:  0.9273 
+# F-statistic: 162.3 on 115 and 1340 DF,  p-value: < 2.2e-16
+apply(lmFiltered$resample[,1:2],2,sd)
+#       RMSE   Rsquared 
+# 0.01434768 0.01812518 
+lmFit1_pred<-predict(lmFit1, x_test)
+# lmFit1_pred_n<-as.numeric(predict(lmFit1, x_test))
+lmFit1_pred_1 <- as.double(exp(lmFit1_pred) - 1)
+write.csv(lmFit1_pred_1, file = "lmFit1_pred.csv")
+
+xyplot(y_train ~ predict(lmFit1),
+  type = c("p", "g"),
+  xlab = "Predicted", ylab = "Observed")
+xyplot(resid(lmFit1) ~ predict(lmFit1),
+       type = c("p", "g"),
+       xlab = "Predicted", ylab = "Residuals")
+
+```
+
+```{r}
+# Robust linear regresson with 10 folds CV
+set.seed(100)
+rlmPCA <- train(x_train, y_train,
+                method = "rlm",
+                preProcess = "pca",
+                trControl = ctrl)
+rlmPCA
+summary(rlmPCA)
+# intercept  psi           RMSE        Rsquared   MAE        
+#    TRUE      psi.huber      0.1209279  0.9076801   0.08534104
+rlmPCA_pred<-predict(rlmPCA, x_test)
+# rlmPCA_pred_n<-as.numeric(predict(rlmPCA, x_test))
+rlmPCA_pred_1 <- as.double(exp(rlmPCA_pred) - 1)
+write.csv(rlmPCA_pred_1, file = "rlmPCA_pred.csv")
+apply(rlmPCA$resample[,1:2],2,sd)
+#       RMSE   Rsquared 
+# 0.01556433 0.02063341 
+```
+
+```{r}
+library("pls")
+# Partial Least Squares (PLS) with 10 folds CV
+set.seed(100)
+plsTune <- train(x_train, y_train,
+                 method = "pls",
+                 tuneLength = 40,
+                 trControl = ctrl,
+                 preProc = c("center", "scale"))
+plsTune
+summary(plsTune)
+# ncomp  RMSE       Rsquared   MAE       
+#   20     0.1132457  0.9184889  0.07858579
+plsTune_pred<-predict(plsTune, x_test)
+plsTune_pred_n<-as.numeric(predict(plsTune, x_test))
+plsTune_pred_1 <- as.double(exp(plsTune_pred) - 1)
+write.csv(plsTune_pred_1, file = "plsTune_pred.csv")
+library("caret")
+varImp(plsTune,scale = FALSE)
+#nrow(varImp(plsTune)$importance)
+apply(plsTune$resample[,1:2],2,sd)
+# RMSE   Rsquared 
+# 0.01414828 0.01785560 
+
+```
+
+```{r}
+# Principal Component Regression (PCR) with 10 folds CV
+set.seed(100)
+pcrTune <- train(x = x_train, y = y_train, method = "pcr", tuneGrid = expand.grid(ncomp = 1:35), trControl = ctrl)
+pcrTune  
+summary(pcrTune)
+# ncomp  RMSE       Rsquared   MAE 
+# 35     0.1214349  0.9067512  0.08715017
+pcrTune_pred<-predict(pcrTune, x_test)
+# pcrTune_pred_n<-as.numeric(predict(pcrTune, x_test))
+pcrTune_pred_1 <- as.double(exp(pcrTune_pred) - 1)
+write.csv(pcrTune_pred_1, file = "pcrTune_pred.csv")
+apply(pcrTune$resample[,1:2],2,sd)
+#      RMSE   Rsquared 
+# 0.01359602 0.01822849 
+
+```
+
+```{r}
+# Ridge regression
+require(elasticnet)
+
+ridgeGrid <- data.frame(.lambda = seq(0, .1, length = 15))
+set.seed(100)
+ridgeRegFit <- train(x_train, y_train,
+                     method = "ridge",
+                     tuneGrid = ridgeGrid,
+                     trControl = ctrl,
+                     preProc = c("center", "scale"))
+ridgeRegFit
+summary(ridgeRegFit)
+# lambda       RMSE       Rsquared   MAE       
+#   0.014285714  0.1129433  0.9192039  0.07891216
+ridgeRegFit_pred<-predict(ridgeRegFit, x_test)
+# ridgeRegFit_pred_n<-as.numeric(predict(ridgeRegFit, x_test))
+ridgeRegFit_pred_1 <- as.double(exp(ridgeRegFit_pred) - 1)
+write.csv(ridgeRegFit_pred_1, file = "ridgeRegFit_pred.csv")
+apply(ridgeRegFit$resample[,1:2],2,sd)
+# RMSE   Rsquared 
+# 0.01403201 0.01789303 
+
+```
+
+```{r}
+#Elastic Net
+enetGrid <- expand.grid(.lambda = c(0, 0.01, .1),
+                          .fraction = seq(.05, 1, length = 20))
+set.seed(100)
+enetTune <- train(x_train, y_train,
+                    method = "enet",
+                    tuneGrid = enetGrid,
+                    trControl = ctrl,
+                    preProc = c("center", "scale"))
+enetTune
+summary(enetTune)
+# lambda  fraction  RMSE          Rsquared   MAE 
+# 0.10    0.60      0.1170720  0.9145279  0.08440295
+enetTune_pred<-predict(enetTune, x_test)
+enetTune_pred_n <- as.numeric(predict(enetTune, x_test))
+enetTune_pred_1 <- as.double(exp(enetTune_pred) - 1)
+write.csv(enetTune_pred_1, file = "enetTune_pred.csv")
+apply(enetTune$resample[,1:2],2,sd)
+# RMSE   Rsquared 
+# 0.01412760 0.01714102
+plot(enetTune)
+
+#Ensemble of PLS Tune with 10 fold CV and Enet with 10 fold CV 
+
+ensem_pred <- (plsTune_pred_n + enetTune_pred_n)/2.0
+
+# ensem_pred <- (ridgeRegFit_pred_n + enetTune_pred_n)/2.0 
+ensem_pred_1 <- as.double(exp(ensem_pred) - 1)
+write.csv(ensem_pred_1, file = "ensem_pred.csv")
+```
+
+
+```{r}
+## Build a simple regression tree
+# install.packages("gbm")
+# library(gbm)
+# install.packages("ipred")
+# library(ipred)
+# install.packages("party")
+# library(party)
+# install.packages("partykit")
+# library(partykit)
+# install.packages("randomForest")
+# library(randomForest)
+require(gbm)
+require(ipred)
+require(party)
+require(partykit)
+require(randomForest)
+require(rpart)
+rPartModel = rpart( SalePrice~.,data = xt_train, method="anova", control=rpart.control(cp=0.01,maxdepth=6) ) 
+rpartTree = as.party(rPartModel)
+dev.new()
+plot(rpartTree)
+rPart_yHat = predict(rPartModel,x_test)
+rPart_yHat_pred_1 <- as.double(exp(rPart_yHat) - 1)
+write.csv(rPart_yHat_pred_1, file = "rPart_yHat_pred.csv")
+summary(rPartModel)
+# Node number 19: 331 observations
+#   mean=11.83108, MSE=0.02666629 
+## Bagged tree:
+BaggTree= bagging( SalePrice~.,data = xt_train)
+
+# predict solubility with this regression tree: 
+Bagg_yHat = predict(BaggTree,x_test)
+Bagg_yHat_pred_1 <- as.double(exp(Bagg_yHat) - 1)
+write.csv(Bagg_yHat_pred_1, file = "Bagg_yHat_pred.csv")
+summary(BaggTree)
+
+
+# fit a randomforest:
+rfModel = randomForest( SalePrice~.,data = xt_train, ntree=500 ) # ntree=500
+summary(rfModel)
+# predict solubility:
+rf_yHat = predict(rfModel,x_test)
+rf_yHat_pred_1 <- as.double(exp(rf_yHat) - 1)
+write.csv(rf_yHat_pred_1, file = "rf_yHat_pred.csv")
+
+# Boosted tree:
+set.seed=100
+#gbmModel = gbm(  y ~ . , data=trainData) 
+gbmModel = gbm.fit( x_train, y_train, distribution="gaussian", n.trees =100, interaction.depth=7, shrinkage=0.1)
+summary(gbmModel)
+# predict solubility:
+gbm_yHat = predict(gbmModel,n.trees = 100, x_test)
+gbm_yHat_pred_1 <- as.double(exp(gbm_yHat) - 1)
+write.csv(gbm_yHat_pred_1, file = "gbm_yHat_pred.csv")
+
+## create a 10 folds CV control
+set.seed(100)
+## rpart2 is used to tune max depth 
+rpartTune <- train(x_train, y_train, method = "rpart2",tuneLength = 20, trControl = ctrl)
+rpartTune
+summary(rpartTune)
+ # maxdepth  RMSE       Rsquared   MAE
+ # 9        0.2145049  0.7102375  0.1588057
+rpartTune_pred = predict(rpartTune,x_test)
+rpartTune_pred_1 <- as.double(exp(rpartTune_pred) - 1)
+write.csv(rpartTune_pred_1, file = "rpartTune_pred.csv")
+
+```
+
+```{r}
+##non linear models
+
+#knn model
+
+knnModel = train(x=x_train, y=y_train, method="knn",
+                 tuneLength=10, trControl = ctrl,
+                 preProc=c("center", "scale"))
+knnModel
+# k   RMSE       Rsquared   MAE  
+# 7  0.1737524  0.8143997  0.1230069
+apply(knnModel$resample[, 1:2], 2, sd)
+# RMSE   Rsquared 
+# 0.01731130 0.03058243 
+plot(knnModel)
+
+knnPredtrain = predict(knnModel, newdata=x_train)
+knnPRtrain = postResample(pred=knnPredtrain, obs=y_train)
+knnPRtrain
+# RMSE  Rsquared       MAE 
+# 0.1496534 0.8633694 0.1054160
+knnPred = predict(knnModel, newdata=x_test)
+knnPR = as.data.frame(exp(knnPred))
+knnPR
+write.csv(knnPR, file = "knnpred.csv")
+```
+
+```{r}
+#neural net
+
+nnGrid = expand.grid( .decay=c(0,0.01,0.1), .size=1:10 )
+
+set.seed(1234)
+
+nnetModel = train(x=x_train, y=y_train, method="nnet", linout=TRUE, trace=FALSE, MaxNWts=5 * (ncol(y_train)+1) + 5 + 1, maxit=100, tuneGrid = nnGrid)
+
+nnetModel 
+# decay  size  RMSE       Rsquared   MAE 
+# 0.10    1    0.1653963  0.8135465  0.1135247
+apply(nnetModel$resample[, 1:2], 2, sd)
+# RMSE   Rsquared 
+# 0.04451905 0.10820569 
+plot(nnetModel)
+
+pred = predict(nnetModel, newdata=x_train)
+nnetPRtrain = postResample(pred=pred, obs=y_train)
+nnetPRtrain
+
+pred = predict(nnetModel, newdata=x_test)
+nnetpred <- as.data.frame(exp(pred))
+nnetpred
+write.csv(nnetpred, file = "nnetpred.csv")
+```
+
+```{r}
+#SVM
+
+set.seed(1234)
+
+svmRModel = train(x=x_train, y=y_train, method="svmRadial", tuneLength=20, trControl = ctrl, preProc= c("center", "scale"))
+svmRModel
+# C          RMSE       Rsquared   MAE 
+# 2.00  0.1141004  0.9170376  0.07801091
+plot(svmRModel)
+apply(svmRModel$resample[, 1:2], 2, sd)
+# RMSE   Rsquared 
+# 0.01986244 0.02363894 
+svmtrain <- data.frame(obs = y_train, pred = predict(svmRModel, x_train))
+svmtrain
+defaultSummary(svmtrain)
+
+pred = predict(svmRModel, x_test)
+svmpred <- as.data.frame(exp(pred))
+write.csv(svmpred, file = "svmpred.csv")
+```
+
+```{r}
+#MARS
+
+marsGrid = expand.grid(.degree=1:2, .nprune=2:38)
+
+set.seed(1234)
+
+marsModel = train(x=x_train, y=y_train, method="earth", tuneGrid=marsGrid, trControl = ctrl, preProc = c("center", "scale"))
+
+marsModel
+# degree  nprune  RMSE       Rsquared   MAE    
+# 1       28      0.1198717  0.9083911  0.08495583
+apply(marsModel$resample[, 1:2], 2, sd)
+# RMSE   Rsquared 
+# 0.01751035 0.02197890
+plot(marsModel)
+varImp(marsModel)
+
+marstrain <- data.frame(obs = y_train, pred = predict(marsModel, x_train))
+marstrain
+
+colnames(marstrain)<- c("obs","pred")
+defaultSummary(marstrain)
+
+pred = predict(marsModel, x_test)
+marspred <- as.data.frame(exp(pred))
+
+write.csv(marspred, file = "marspred.csv")
+```
+
